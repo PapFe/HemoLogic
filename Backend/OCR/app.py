@@ -3,9 +3,11 @@ from flask_cors import CORS
 from OCR_engine import make_mock_data,create_file
 import requests
 import ocr
+import os
 app = Flask(__name__)
 CORS(app)
-CLASSIFIER_URL = "http://127.0.0.1:5002/api/hello"
+#CLASSIFIER_URL = "http://127.0.0.1:5002/api/hello"
+CLASSIFIER_URL = os.getenv("CLASSIFIER_URL", "http://127.0.0.1:5002/api/hello")
 @app.route("/api/hello", methods=["POST"])
 def hello():
     # Check if a file was included
@@ -16,16 +18,6 @@ def hello():
     path = create_file(uploaded_file)
     filename = uploaded_file.filename
     # ---- 1) FORWARD TO CLASSIFIER SERVICE ----
-    files = {
-        "file": (uploaded_file.filename, uploaded_file.stream, uploaded_file.mimetype)
-    }
-
-    try:
-        classifier_response = requests.post(CLASSIFIER_URL, files=files)
-        classifier_json = classifier_response.json()
-        print(classifier_json)
-    except Exception as e:
-        print(jsonify({"error": "Classifier service request failed", "details": str(e)}), 500)
 
 
     res = ocr.run_ocr(path)
