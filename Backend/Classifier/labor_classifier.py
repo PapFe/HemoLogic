@@ -5,18 +5,17 @@ from pathlib import Path
 from PIL import Image
 import time  # ← idő méréshez
 
-# ---------- CONFIG ----------
-input_path = "a.jpg"  # vagy "adat.jpg", "adat.png"
-POPPLER_PATH = r"C:\DDC\demo\Release-25.11.0-0\poppler-25.11.0\Library\bin"
 
-# PIL limit növelése (nagy PDF-ekhez)
-Image.MAX_IMAGE_PIXELS = None
 
-def classify():
+def classify(input_path="",POPPLER_PATH = r"Release-25.11.0-0\poppler-25.11.0\Library\bin"):
+
+    if not input_path:
+        return False
+
+    # PIL limit növelése (nagy PDF-ekhez)
+    Image.MAX_IMAGE_PIXELS = None
     start_time = time.time()
-
     ext = Path(input_path).suffix.lower()
-
     if ext == ".pdf":
         pages = convert_from_path(
             input_path,
@@ -38,7 +37,6 @@ def classify():
     # ---------- Szürkeárnyalat ----------
     page_image_gray = cv2.cvtColor(page_image, cv2.COLOR_RGB2GRAY)
     height, width = page_image_gray.shape
-
     # ---------- Template matching ----------
     logo_color = cv2.imread("logo3.png")
     logo_gray = cv2.cvtColor(logo_color, cv2.COLOR_BGR2GRAY)
@@ -51,14 +49,7 @@ def classify():
     # ⏱ Időmérés end
     end_time = time.time()
     elapsed_time = end_time - start_time
-    print(f"A keresés ideje: {elapsed_time:.2f} másodperc")
     if len(loc[0]) > 0:
-        print("Synlab logó megtalálva → Synlab template kell")
-        return True
+        return True,elapsed_time
     else:
-        print("Másik labor vagy template kell")
-        return False
-
-
-if __name__ == "__main__":
-    classify()
+        return False,elapsed_time
