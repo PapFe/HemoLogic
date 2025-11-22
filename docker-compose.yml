@@ -1,0 +1,35 @@
+version: "3.9"
+
+services:
+  agent:
+    build:
+      context: .
+      dockerfile: Backend/Agent/Dockerfile
+    container_name: agent
+    ports:
+      - "5001:5001"
+    depends_on:
+      - ocr
+      - classifier
+
+  ocr:
+    build:
+      context: .
+      dockerfile: Backend/OCR/Dockerfile
+    container_name: ocr
+    ports:
+      - "5000:5000"
+    environment:
+      # 🔑 OCR talks to classifier via service name, not localhost
+      - CLASSIFIER_URL=http://classifier:5002/api/hello
+    depends_on:
+      - classifier
+
+  classifier:
+    build:
+      context: .
+      dockerfile: Backend/Classifier/Dockerfile
+    container_name: classifier
+    ports:
+      - "5002:5002"
+

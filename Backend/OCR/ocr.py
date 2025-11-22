@@ -3,8 +3,16 @@ import fitz
 import numpy as np
 import cv2
 import pandas as pd
+from pathlib import Path
+import tempfile
+import os
+import OCR_engine
+import json
+import difflib
+import re
+import copy
 
-PDF_FILE = "test.pdf"
+PDF_FILE = "adat.pdf"
 OUTPUT_CSV = "ocr_results.csv"
 LANGUAGES = ["hu", "en"]
 
@@ -13,6 +21,83 @@ ROW_GROUPING_TOLERANCE = 30
 DPI = 600
 MIN_TEXT_SIZE = 0
 GPU_ENABLED = True
+
+# Column boundaries (X coordinates) - will be set dynamically based on page width
+COLUMN_BOUNDARIES = []  # Will be populated based on page width ratios
+
+template_json = """
+{
+  "measurements": [
+    {"name":"Fehérvérsejtszám","lower_limit":4.4,"upper_limit":11.3,"unit":"Giga/L","value":""},
+    {"name":"Vörösvérsejtszám","lower_limit":4.5,"upper_limit":5.9,"unit":"Tera/L","value":""},
+    {"name":"Hemoglobin","lower_limit":140,"upper_limit":175,"unit":"g/L","value":""},
+    {"name":"Hematokrit","lower_limit":0.4,"upper_limit":0.52,"unit":"L/L","value":""},
+    {"name":"MCV","lower_limit":80,"upper_limit":96,"unit":"fL","value":""},
+    {"name":"MCH","lower_limit":28,"upper_limit":33,"unit":"pg","value":""},
+    {"name":"MCHC","lower_limit":310,"upper_limit":370,"unit":"g/L","value":""},
+    {"name":"Trombocitaszám","lower_limit":150,"upper_limit":450,"unit":"Giga/L","value":""},
+    {"name":"RDW-CV","lower_limit":11.6,"upper_limit":15.6,"unit":"%","value":""},
+    {"name":"MPV","lower_limit":7.2,"upper_limit":13,"unit":"fL","value":""},
+    {"name":"Neutrofil granulocita %","lower_limit":50,"upper_limit":70,"unit":"%","value":""},
+    {"name":"Limfocita %","lower_limit":25,"upper_limit":40,"unit":"%","value":""},
+    {"name":"Monocita %","lower_limit":2,"upper_limit":8,"unit":"%","value":""},
+    {"name":"Eozinofil granulocita %","lower_limit":1,"upper_limit":4,"unit":"%","value":""},
+    {"name":"Bazofil granulocita %","lower_limit":0,"upper_limit":1,"unit":"%","value":""},
+    {"name":"Neutrofil granulocita #","lower_limit":2.2,"upper_limit":7.9,"unit":"Giga/L","value":""},
+    {"name":"Limfocita #","lower_limit":1.1,"upper_limit":4.5,"unit":"Giga/L","value":""},
+    {"name":"Monocita #","lower_limit":0.1,"upper_limit":0.9,"unit":"Giga/L","value":""},
+    {"name":"Eozinofil granulocita #","lower_limit":0.05,"upper_limit":0.45,"unit":"Giga/L","value":""},
+    {"name":"Bazofil granulocita #","lower_limit":0,"upper_limit":0.1,"unit":"Giga/L","value":""},
+    {"name":"Glükóz (éhgyomri vércukor)","lower_limit":3.7,"upper_limit":6,"unit":"mmol/L","value":""},
+    {"name":"Glükóz (éhgyomri, 0 perces vércukor) - plazma","lower_limit":3.7,"upper_limit":6,"unit":"mmol/L","value":""},
+    {"name":"Hemoglobin A1c (NGSP)","lower_limit":4,"upper_limit":5.6,"unit":"%","value":""},
+    {"name":"Hemoglobin A1c (IFCC)","lower_limit":20,"upper_limit":39,"unit":"mmol/mol","value":""},
+    {"name":"Karbamid","lower_limit":2.8,"upper_limit":7.2,"unit":"mmol/L","value":""},
+    {"name":"Kreatinin","lower_limit":64,"upper_limit":104,"unit":"umol/L","value":""},
+    {"name":"eGFR-EPI","lower_limit":90,"upper_limit":null,"unit":"mL/min/1.73m2","value":""},
+    {"name":"Húgysav","lower_limit":208,"upper_limit":428,"unit":"umol/L","value":""},
+    {"name":"Nátrium (Na)","lower_limit":136,"upper_limit":146,"unit":"mmol/L","value":""},
+    {"name":"Kálium (K)","lower_limit":3.5,"upper_limit":5.1,"unit":"mmol/L","value":""},
+    {"name":"Összfehérje","lower_limit":66,"upper_limit":83,"unit":"g/L","value":""},
+    {"name":"Albumin","lower_limit":35,"upper_limit":52,"unit":"g/L","value":""},
+    {"name":"C reaktív protein (CRP)","lower_limit":null,"upper_limit":5,"unit":"mg/L","value":""},
+    {"name":"C reaktív protein ultraszenzitív (hsCRP)","lower_limit":0.1,"upper_limit":1,"unit":"mg/L","value":""},
+    {"name":"Vas (Fe)","lower_limit":12.5,"upper_limit":32.2,"unit":"umol/L","value":""},
+    {"name":"Transzferrin","lower_limit":2,"upper_limit":3.6,"unit":"g/L","value":""},
+    {"name":"Transzferrin szaturáció","lower_limit":20,"upper_limit":55,"unit":"%","value":""},
+    {"name":"Koleszterin","lower_limit":null,"upper_limit":5.2,"unit":"mmol/L","value":""},
+    {"name":"Trigliceridák","lower_limit":null,"upper_limit":1.71,"unit":"mmol/L","value":""},
+    {"name":"Non HDL koleszterin","lower_limit":null,"upper_limit":4.1,"unit":"mmol/L","value":""},
+    {"name":"HDL koleszterin","lower_limit":1.04,"upper_limit":null,"unit":"mmol/L","value":""},
+    {"name":"LDL koleszterin","lower_limit":null,"upper_limit":3.34,"unit":"mmol/L","value":""},
+    {"name":"Totál bilirubin","lower_limit":5,"upper_limit":21,"unit":"umol/L","value":""},
+    {"name":"GOT (ASAT)","lower_limit":null,"upper_limit":50,"unit":"U/L","value":""},
+    {"name":"GPT (ALAT)","lower_limit":null,"upper_limit":50,"unit":"U/L","value":""},
+    {"name":"Gamma GT (GGT)","lower_limit":null,"upper_limit":55,"unit":"U/L","value":""},
+    {"name":"Alkalitikus foszfatáz","lower_limit":40,"upper_limit":129,"unit":"U/L","value":""},
+    {"name":"D vitamin (25OH)","lower_limit":75,"upper_limit":null,"unit":"nmol/L","value":""},
+    {"name":"B12 vitamin","lower_limit":156,"upper_limit":672,"unit":"pmol/L","value":""},
+    {"name":"Fólsav","lower_limit":12.19,"upper_limit":null,"unit":"nmol/L","value":""}
+  ]
+}
+"""
+template = json.loads(template_json)
+
+
+def detect_column_boundaries(page_width):
+    """Detect column boundaries dynamically based on page width ratios."""
+    global COLUMN_BOUNDARIES
+
+    # Based on the observed ratios from the PDF:
+    # Test name column: ~0-25% of page width
+    # Result column: ~25-45% of page width
+    # Reference column: ~45%+ of page width
+
+    # These ratios work for the current PDF layout
+    test_end = int(page_width * 0.25)  # ~25% for test names
+    result_end = int(page_width * 0.45)  # ~45% for results
+
+    COLUMN_BOUNDARIES = [test_end, result_end]
 
 
 def run_ocr(pdf_path, is_correct_blood_test=True):
@@ -30,16 +115,17 @@ def run_ocr(pdf_path, is_correct_blood_test=True):
         if page_data is not None:
             all_data.extend(page_data)
 
-    save_results(all_data)
+    res = save_results(all_data)
+
+    return res
 
 
 def load_reader():
-    print("1. EasyOCR betöltése (ez eltarthat pár másodpercig az első indításkor)...")
+    # print("1. EasyOCR betöltése (ez eltarthat pár másodpercig az első indításkor)...")
     return easyocr.Reader(LANGUAGES, gpu=GPU_ENABLED)
 
 
 def load_pdf(pdf_file):
-    print(f"2. PDF megnyitása: {pdf_file}")
     try:
         return fitz.open(pdf_file)
     except Exception as e:
@@ -87,50 +173,119 @@ def extract_data_from_rows(rows, header_index, page_num):
     for row in data_rows:
         if not row:
             continue
-        row.sort(key=lambda x: x[0][0][0])
-        print(f"Row: {row}")
-        texts = [text.strip() for _, text, _ in row]
-        print(f"Texts: {texts}")
-        eredmeny_idx = None
-        for i, text in enumerate(texts):
-            try:
-                cleaned = text.replace(",", ".").replace(" ", "").replace("..", ".")
+        # Assign texts to columns based on X boundaries
+        columns = [[] for _ in range(len(COLUMN_BOUNDARIES) + 1)]
+        for bbox, text, prob in row:
+            x = bbox[0][0]  # Left X coordinate
+            assigned = False
+            for i, boundary in enumerate(COLUMN_BOUNDARIES):
+                if x < boundary:
+                    columns[i].append(text.strip())
+                    assigned = True
+                    break
+            if not assigned:
+                columns[-1].append(text.strip())
 
-                if ">" in cleaned:
-                    cleaned = cleaned.replace(">", "")
-                float(cleaned)
-                print(f"Cleaned: {cleaned}")
-                eredmeny_idx = i
-                break
-            except ValueError:
-                pass
-        if eredmeny_idx is not None:
-            if eredmeny_idx == 0:
-                # Number is first, name after
-                vizsgalat = " ".join(texts[1:]).strip()
-                eredmeny = texts[0].strip()
-            else:
-                vizsgalat = " ".join(texts[:eredmeny_idx]).strip()
-                print(f"Vizsgálat else: {vizsgalat}")
-                eredmeny = texts[eredmeny_idx].strip()
-            if eredmeny_idx > 0 and texts[eredmeny_idx - 1] in ["<", ">", "<=", ">="]:
-                if eredmeny_idx == 1:
-                    vizsgalat = " ".join(texts[1:]).strip()
-                    print(f"Vizsgálat if: {vizsgalat}")
+        # Extract data: Column 0 = test name, find result in columns
+        if len(columns[0]) > 0:
+            vizsgalat = " ".join(columns[0]).strip()
 
-                    eredmeny = texts[0] + texts[1]
-                else:
-                    vizsgalat = " ".join(texts[: eredmeny_idx - 1]).strip()
-                    print(f"Vizsgálat else 2: {vizsgalat}")
+            # Skip invalid test names (garbage OCR text, headers, footers)
+            if (
+                len(vizsgalat) < 3
+                or not any(char.isalpha() for char in vizsgalat)
+                or vizsgalat.startswith("*")
+                or "/" in vizsgalat  # Page numbers like 1/2
+                or any(
+                    word in vizsgalat.lower()
+                    for word in [
+                        "oldal",
+                        "laboratóriumi",
+                        "lelet",
+                        "synlab",
+                        "kft",
+                        "központ",
+                        "ügyfélszolgálat",
+                        "igazgató",
+                        "azonosító",
+                        "páciens",
+                        "beküldő",
+                        "születési",
+                        "lakcím",
+                        "mintavétel",
+                        "rögzítés",
+                        "információ",
+                        "szerződött",
+                        "partner",
+                        "oldal:",
+                        "oldalszám",
+                    ]
+                )
+            ):
+                continue
 
-                    eredmeny = texts[eredmeny_idx - 1] + texts[eredmeny_idx]
+            # Check if column 1 contains additional test name info (like "plazma")
+            if len(columns) > 1 and columns[1]:
+                col1_text = " ".join(columns[1]).strip()
+                # If column 1 contains non-numeric text that looks like test modifier
+                if (
+                    col1_text
+                    and not any(char.isdigit() for char in col1_text)
+                    and len(col1_text) < 20
+                ):
+                    if col1_text.lower() in [
+                        "plazma",
+                        "vér",
+                        "vizelet",
+                        "szérum",
+                        "plasma",
+                        "blood",
+                        "urine",
+                        "serum",
+                    ]:
+                        vizsgalat += f" - {col1_text}"
+
+            # Find result: look for numeric value in columns 1+
+            eredmeny = ""
+            for col in columns[1:]:
+                for item in col:
+                    item = item.strip()
+                    # Skip reference ranges and units
+                    if not any(
+                        keyword in item.lower()
+                        for keyword in [
+                            "-",
+                            "min",
+                            "max",
+                            "ref",
+                            "mmol",
+                            "g/l",
+                            "uil",
+                            "%",
+                            "gig",
+                            "tera",
+                            "peta",
+                            "mg/l",
+                        ]
+                    ):
+                        # Check if it contains digits and looks like a result
+                        if any(char.isdigit() for char in item) and len(item) <= 10:
+                            eredmeny = item
+                            break
+                if eredmeny:
+                    break
+
+            if not eredmeny:
+                continue  # No valid result found
+
+            # Clean result
             eredmeny = eredmeny.replace(",", ".").replace(" ", "").replace("..", ".")
             if ">" in eredmeny:
                 eredmeny = eredmeny.replace(">", "")
-            print(f"Vizsgalat: {vizsgalat}")
-            print(f"Eredmény: {eredmeny}")
+
             if not vizsgalat or vizsgalat in ["<", ">", "<=", ">="]:
                 continue
+
             page_data.append(
                 {
                     "page": page_num + 1,
@@ -138,40 +293,37 @@ def extract_data_from_rows(rows, header_index, page_num):
                     "Eredmény": eredmeny,
                 }
             )
-        else:
-            pass
+
     return page_data
 
 
 def process_page(page, page_num, reader):
-    print(f"\n--- {page_num + 1}. oldal feldolgozása... ---")
-
     pix = page.get_pixmap(dpi=DPI, alpha=False)
     img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
 
-    img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    cv2.imwrite(f"debug_easyocr_oldal_{page_num + 1}.jpg", img_cv)
+    # Detect column boundaries based on page width
+    detect_column_boundaries(pix.w)
 
-    # Sharpen the image mildly
+    # Convert to BGR for processing
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+    # Sharpen the image mildly to improve OCR accuracy
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    img_cv = cv2.filter2D(img_cv, -1, kernel)
+    img_bgr = cv2.filter2D(img_bgr, -1, kernel)
 
-    # Enhance with CLAHE
-    img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    # Enhance with CLAHE for better contrast
+    img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     img_gray = clahe.apply(img_gray)
-    cv2.imwrite(f"debug_easyocr_enhanced_{page_num + 1}.jpg", img_gray)
 
-    # Use grayscale for OCR
+    # Use enhanced grayscale for OCR
     img_array = img_gray
 
-    print("Olvasás folyamatban...")
     result = reader.readtext(
         img_array, detail=1, paragraph=False, min_size=MIN_TEXT_SIZE
     )
 
     if not result:
-        print("  Nincs találat ezen az oldalon.")
         return []
 
     detections = []
@@ -181,23 +333,11 @@ def process_page(page, page_num, reader):
             detections.append((bbox, text, prob))
             count += 1
 
-    print(f"  >> Összesen {count} sort találtam.")
-
     rows = group_detections_into_rows(detections)
 
     header_index = find_header_index(rows)
 
     page_data = extract_data_from_rows(rows, header_index, page_num)
-
-    for bbox, text, prob in detections:
-        try:
-            top_left = tuple(map(int, bbox[0]))
-            bottom_right = tuple(map(int, bbox[2]))
-            cv2.rectangle(img_cv, top_left, bottom_right, (0, 255, 0), 2)
-        except Exception:
-            pass
-
-    cv2.imwrite(f"debug_easyocr_eredmeny_{page_num + 1}.jpg", img_cv)
 
     return page_data
 
@@ -242,41 +382,68 @@ def save_results(data):
             }
         )
 
-    # Merge broken Vizsgálat
-    merged_data = []
-    i = 0
-    while i < len(processed_data):
-        item = processed_data[i]
-        if (
-            item["Vizsgálat"].endswith(",") or not item["Vizsgálat"].endswith(")")
-        ) and i + 1 < len(processed_data):
-            next_item = processed_data[i + 1]
-            if next_item["Vizsgálat"] and (
-                next_item["Vizsgálat"][0].islower()
-                or next_item["Vizsgálat"][0].isdigit()
-            ):
-                item["Vizsgálat"] += " " + next_item["Vizsgálat"]
-                i += 1  # skip next
-        merged_data.append(item)
-        i += 1
-
     # Filter out invalid rows where name starts with digit
     # filtered_data = [item for item in merged_data if not item["Vizsgálat"].startswith(tuple('0123456789'))]
-    filtered_data = merged_data
+    filtered_data = processed_data
 
     df = pd.DataFrame(filtered_data)
-    print(
-        f"\n✅ KÉSZ! Összesen {len(filtered_data)} tábla sort gyűjtöttem pandas DataFrame-be."
-    )
-    print(df.head())
+
     df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
-    print(f"Az eredményeket elmentettem: {OUTPUT_CSV}")
-    print("Nézd meg a 'debug_easyocr_eredmeny_1.jpg' képet is!")
+    return df_to_JSON(df)  # OCR_engine.make_mock_data("hello.pdf")
+
+    # df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
 
 
-def main():
-    run_ocr(PDF_FILE, is_correct_blood_test=True)
+def normalize_name(s: str) -> str:
+    """
+    Make names comparable:
+    - lowercase
+    - remove spaces, commas, hyphens, quotes
+    - collapse multiple spaces
+    """
+    if not isinstance(s, str):
+        return ""
+    s = s.lower()
+    # unify some punctuation / spacing
+    s = s.replace("(", " ").replace(")", " ")
+    s = s.replace("-", " ")
+    s = s.replace(",", " ")
+    s = s.replace("  ", " ")
+    # remove all whitespace
+    s = re.sub(r"\s+", "", s)
+    return s
 
 
-if __name__ == "__main__":
-    main()
+def df_to_JSON(df):
+    value_by_name = {}
+
+    for _, row in df.iterrows():
+        raw_name = str(row["Vizsgálat"])
+        norm = normalize_name(raw_name)
+        value_by_name[norm] = str(row["Eredmény"]).strip()
+
+    # Work on a COPY so we don't mutate the global template
+    template_copy = copy.deepcopy(template)
+
+    unmatched = []
+
+    for m in template_copy["measurements"]:
+        norm_name = normalize_name(m["name"])
+        best_match = None
+        best_ratio = 0
+        for key in value_by_name:
+            ratio = difflib.SequenceMatcher(None, norm_name, key).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = key
+        if best_ratio >= 0.8:
+            m["value"] = value_by_name[best_match]
+        else:
+            unmatched.append(m["name"])
+
+    print("Unmatched template names:")
+    for name in unmatched:
+        print("  -", name)
+
+    # ✅ Return a Python dict, NOT a JSON string
+    return template_copy
