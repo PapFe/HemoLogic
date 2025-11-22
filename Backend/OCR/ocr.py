@@ -8,7 +8,11 @@ import tempfile
 import os
 import OCR_engine
 import json
-PDF_FILE = "test.pdf"
+import difflib
+import re
+import copy
+
+PDF_FILE = "adat.pdf"
 OUTPUT_CSV = "ocr_results.csv"
 LANGUAGES = ["hu", "en"]
 
@@ -17,6 +21,10 @@ ROW_GROUPING_TOLERANCE = 30
 DPI = 600
 MIN_TEXT_SIZE = 0
 GPU_ENABLED = True
+
+# Column boundaries (X coordinates) - will be set dynamically based on page width
+COLUMN_BOUNDARIES = []  # Will be populated based on page width ratios
+
 template_json = """
 {
   "measurements": [
@@ -74,6 +82,24 @@ template_json = """
 }
 """
 template = json.loads(template_json)
+
+
+def detect_column_boundaries(page_width):
+    """Detect column boundaries dynamically based on page width ratios."""
+    global COLUMN_BOUNDARIES
+
+    # Based on the observed ratios from the PDF:
+    # Test name column: ~0-25% of page width
+    # Result column: ~25-45% of page width
+    # Reference column: ~45%+ of page width
+
+    # These ratios work for the current PDF layout
+    test_end = int(page_width * 0.25)  # ~25% for test names
+    result_end = int(page_width * 0.45)  # ~45% for results
+
+    COLUMN_BOUNDARIES = [test_end, result_end]
+
+
 def run_ocr(pdf_path, is_correct_blood_test=True):
     if not is_correct_blood_test:
         raise ValueError(
@@ -95,7 +121,7 @@ def run_ocr(pdf_path, is_correct_blood_test=True):
 
 
 def load_reader():
-    #print("1. EasyOCR betöltése (ez eltarthat pár másodpercig az első indításkor)...")
+    # print("1. EasyOCR betöltése (ez eltarthat pár másodpercig az első indításkor)...")
     return easyocr.Reader(LANGUAGES, gpu=GPU_ENABLED)
 
 
@@ -147,48 +173,119 @@ def extract_data_from_rows(rows, header_index, page_num):
     for row in data_rows:
         if not row:
             continue
-        row.sort(key=lambda x: x[0][0][0])
-        texts = [text.strip() for _, text, _ in row]
+        # Assign texts to columns based on X boundaries
+        columns = [[] for _ in range(len(COLUMN_BOUNDARIES) + 1)]
+        for bbox, text, prob in row:
+            x = bbox[0][0]  # Left X coordinate
+            assigned = False
+            for i, boundary in enumerate(COLUMN_BOUNDARIES):
+                if x < boundary:
+                    columns[i].append(text.strip())
+                    assigned = True
+                    break
+            if not assigned:
+                columns[-1].append(text.strip())
 
-        eredmeny_idx = None
-        for i, text in enumerate(texts):
-            try:
-                cleaned = text.replace(",", ".").replace(" ", "").replace("..", ".")
+        # Extract data: Column 0 = test name, find result in columns
+        if len(columns[0]) > 0:
+            vizsgalat = " ".join(columns[0]).strip()
 
-                if ">" in cleaned:
-                    cleaned = cleaned.replace(">", "")
-                float(cleaned)
+            # Skip invalid test names (garbage OCR text, headers, footers)
+            if (
+                len(vizsgalat) < 3
+                or not any(char.isalpha() for char in vizsgalat)
+                or vizsgalat.startswith("*")
+                or "/" in vizsgalat  # Page numbers like 1/2
+                or any(
+                    word in vizsgalat.lower()
+                    for word in [
+                        "oldal",
+                        "laboratóriumi",
+                        "lelet",
+                        "synlab",
+                        "kft",
+                        "központ",
+                        "ügyfélszolgálat",
+                        "igazgató",
+                        "azonosító",
+                        "páciens",
+                        "beküldő",
+                        "születési",
+                        "lakcím",
+                        "mintavétel",
+                        "rögzítés",
+                        "információ",
+                        "szerződött",
+                        "partner",
+                        "oldal:",
+                        "oldalszám",
+                    ]
+                )
+            ):
+                continue
 
-                eredmeny_idx = i
-                break
-            except ValueError:
-                pass
-        if eredmeny_idx is not None:
-            if eredmeny_idx == 0:
-                # Number is first, name after
-                vizsgalat = " ".join(texts[1:]).strip()
-                eredmeny = texts[0].strip()
-            else:
-                vizsgalat = " ".join(texts[:eredmeny_idx]).strip()
+            # Check if column 1 contains additional test name info (like "plazma")
+            if len(columns) > 1 and columns[1]:
+                col1_text = " ".join(columns[1]).strip()
+                # If column 1 contains non-numeric text that looks like test modifier
+                if (
+                    col1_text
+                    and not any(char.isdigit() for char in col1_text)
+                    and len(col1_text) < 20
+                ):
+                    if col1_text.lower() in [
+                        "plazma",
+                        "vér",
+                        "vizelet",
+                        "szérum",
+                        "plasma",
+                        "blood",
+                        "urine",
+                        "serum",
+                    ]:
+                        vizsgalat += f" - {col1_text}"
 
-                eredmeny = texts[eredmeny_idx].strip()
-            if eredmeny_idx > 0 and texts[eredmeny_idx - 1] in ["<", ">", "<=", ">="]:
-                if eredmeny_idx == 1:
-                    vizsgalat = " ".join(texts[1:]).strip()
+            # Find result: look for numeric value in columns 1+
+            eredmeny = ""
+            for col in columns[1:]:
+                for item in col:
+                    item = item.strip()
+                    # Skip reference ranges and units
+                    if not any(
+                        keyword in item.lower()
+                        for keyword in [
+                            "-",
+                            "min",
+                            "max",
+                            "ref",
+                            "mmol",
+                            "g/l",
+                            "uil",
+                            "%",
+                            "gig",
+                            "tera",
+                            "peta",
+                            "mg/l",
+                        ]
+                    ):
+                        # Check if it contains digits and looks like a result
+                        if any(char.isdigit() for char in item) and len(item) <= 10:
+                            eredmeny = item
+                            break
+                if eredmeny:
+                    break
 
+            if not eredmeny:
+                continue  # No valid result found
 
-                    eredmeny = texts[0] + texts[1]
-                else:
-                    vizsgalat = " ".join(texts[: eredmeny_idx - 1]).strip()
-
-
-                    eredmeny = texts[eredmeny_idx - 1] + texts[eredmeny_idx]
+            # Clean result
             eredmeny = eredmeny.replace(",", ".").replace(" ", "").replace("..", ".")
             if ">" in eredmeny:
                 eredmeny = eredmeny.replace(">", "")
 
             if not vizsgalat or vizsgalat in ["<", ">", "<=", ">="]:
                 continue
+
             page_data.append(
                 {
                     "page": page_num + 1,
@@ -196,30 +293,30 @@ def extract_data_from_rows(rows, header_index, page_num):
                     "Eredmény": eredmeny,
                 }
             )
-        else:
-            pass
+
     return page_data
 
 
 def process_page(page, page_num, reader):
-
     pix = page.get_pixmap(dpi=DPI, alpha=False)
     img_array = np.frombuffer(pix.samples, dtype=np.uint8).reshape(pix.h, pix.w, pix.n)
 
-    img_cv = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
-    #cv2.imwrite(f"debug_easyocr_oldal_{page_num + 1}.jpg", img_cv)
+    # Detect column boundaries based on page width
+    detect_column_boundaries(pix.w)
 
-    # Sharpen the image mildly
+    # Convert to BGR for processing
+    img_bgr = cv2.cvtColor(img_array, cv2.COLOR_RGB2BGR)
+
+    # Sharpen the image mildly to improve OCR accuracy
     kernel = np.array([[0, -1, 0], [-1, 5, -1], [0, -1, 0]])
-    img_cv = cv2.filter2D(img_cv, -1, kernel)
+    img_bgr = cv2.filter2D(img_bgr, -1, kernel)
 
-    # Enhance with CLAHE
-    img_gray = cv2.cvtColor(img_cv, cv2.COLOR_BGR2GRAY)
+    # Enhance with CLAHE for better contrast
+    img_gray = cv2.cvtColor(img_bgr, cv2.COLOR_BGR2GRAY)
     clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
     img_gray = clahe.apply(img_gray)
-    #cv2.imwrite(f"debug_easyocr_enhanced_{page_num + 1}.jpg", img_gray)
 
-    # Use grayscale for OCR
+    # Use enhanced grayscale for OCR
     img_array = img_gray
 
     result = reader.readtext(
@@ -236,23 +333,11 @@ def process_page(page, page_num, reader):
             detections.append((bbox, text, prob))
             count += 1
 
-
-
     rows = group_detections_into_rows(detections)
 
     header_index = find_header_index(rows)
 
     page_data = extract_data_from_rows(rows, header_index, page_num)
-
-    for bbox, text, prob in detections:
-        try:
-            top_left = tuple(map(int, bbox[0]))
-            bottom_right = tuple(map(int, bbox[2]))
-            cv2.rectangle(img_cv, top_left, bottom_right, (0, 255, 0), 2)
-        except Exception:
-            pass
-
-    #cv2.imwrite(f"debug_easyocr_eredmeny_{page_num + 1}.jpg", img_cv)
 
     return page_data
 
@@ -297,35 +382,18 @@ def save_results(data):
             }
         )
 
-    # Merge broken Vizsgálat
-    merged_data = []
-    i = 0
-    while i < len(processed_data):
-        item = processed_data[i]
-        if (
-            item["Vizsgálat"].endswith(",") or not item["Vizsgálat"].endswith(")")
-        ) and i + 1 < len(processed_data):
-            next_item = processed_data[i + 1]
-            if next_item["Vizsgálat"] and (
-                next_item["Vizsgálat"][0].islower()
-                or next_item["Vizsgálat"][0].isdigit()
-            ):
-                item["Vizsgálat"] += " " + next_item["Vizsgálat"]
-                i += 1  # skip next
-        merged_data.append(item)
-        i += 1
-
     # Filter out invalid rows where name starts with digit
     # filtered_data = [item for item in merged_data if not item["Vizsgálat"].startswith(tuple('0123456789'))]
-    filtered_data = merged_data
+    filtered_data = processed_data
 
     df = pd.DataFrame(filtered_data)
 
     df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
-    return df_to_JSON(df)#OCR_engine.make_mock_data("hello.pdf")
+    return df_to_JSON(df)  # OCR_engine.make_mock_data("hello.pdf")
 
-    #df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
-import re
+    # df.to_csv(OUTPUT_CSV, index=False, encoding="utf-8")
+
+
 def normalize_name(s: str) -> str:
     """
     Make names comparable:
@@ -345,7 +413,6 @@ def normalize_name(s: str) -> str:
     s = re.sub(r"\s+", "", s)
     return s
 
-import copy
 
 def df_to_JSON(df):
     value_by_name = {}
@@ -362,8 +429,15 @@ def df_to_JSON(df):
 
     for m in template_copy["measurements"]:
         norm_name = normalize_name(m["name"])
-        if norm_name in value_by_name:
-            m["value"] = value_by_name[norm_name]
+        best_match = None
+        best_ratio = 0
+        for key in value_by_name:
+            ratio = difflib.SequenceMatcher(None, norm_name, key).ratio()
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_match = key
+        if best_ratio >= 0.8:
+            m["value"] = value_by_name[best_match]
         else:
             unmatched.append(m["name"])
 
@@ -373,7 +447,3 @@ def df_to_JSON(df):
 
     # ✅ Return a Python dict, NOT a JSON string
     return template_copy
-
-
-
-
