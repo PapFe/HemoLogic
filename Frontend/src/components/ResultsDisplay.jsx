@@ -5,36 +5,23 @@ import { FileJson, Table, Download, Copy, CheckCircle2, AlertCircle, Sparkles, B
 import { Button } from '@/components/ui/button';
 import { useToast } from '@/components/ui/use-toast';
 
+const formatLabel = (key) => {
+  return key
+    .replace(/([A-Z])/g, ' $1')          // split camelCase: patientId -> patient Id
+    .replace(/_/g, ' ')                  // snake_case -> snake case
+    .replace(/\b\w/g, (c) => c.toUpperCase()); // capitalize each word
+};
+
+
 const ResultsDisplay = ({ data }) => {
   const [viewMode, setViewMode] = useState('table');
   const [showChat, setShowChat] = useState(false);
   const [streamedText, setStreamedText] = useState('');
   const [isStreaming, setIsStreaming] = useState(false);
+  const [fullAnalysisText, setFullAnalysisText] = useState('');
   const chatContainerRef = useRef(null);
   const { toast } = useToast();
 
-  const fullAnalysisText = `Analyzing Patient Data...
-Patient: ${data.patientInfo.name} | ID: ${data.patientInfo.patientId}
-Age: ${data.patientInfo.age} | Gender: ${data.patientInfo.gender}
-
-Clinical Evaluation:
-Based on the blood test results from ${data.patientInfo.testDate}, the patient demonstrates generally healthy hematological function.
-
-Key Observations:
-1. Glycemic Status (Attention Required):
-   - Glucose: 105 mg/dL (High)
-   - Assessment: Fasting glucose exceeds the reference range (70-100 mg/dL), indicating potential Impaired Fasting Glucose (IFG). Dietary adjustments and HbA1c monitoring are recommended.
-
-2. Lipid Profile:
-   - Total Cholesterol: 198 mg/dL
-   - Assessment: Within normal limits (<200 mg/dL) but approaching the upper threshold. Maintenance of a heart-healthy diet is advisable.
-
-3. Hematology & Immunology:
-   - CBC Parameters (Hemoglobin, WBC, Platelets): All within optimal ranges.
-   - Immune Markers: No evidence of acute infection or inflammation detected.
-
-Summary:
-The patient is in good general health with a specific need to address elevated fasting glucose levels to prevent metabolic complications.`;
 
   useEffect(() => {
     if (showChat && isStreaming) {
@@ -52,6 +39,7 @@ The patient is in good general health with a specific need to address elevated f
     }
   }, [showChat, isStreaming, streamedText, fullAnalysisText]);
 
+  /*
   const startAnalysis = () => {
     if (!showChat) {
       setShowChat(true);
@@ -59,6 +47,50 @@ The patient is in good general health with a specific need to address elevated f
       setStreamedText('');
     }
   };
+*/
+  const startAnalysis = async () => {
+  if (showChat) return; // avoid double clicks
+
+  try {
+    setShowChat(true);
+    setStreamedText('');
+    setFullAnalysisText('');
+    setIsStreaming(false);
+    const endpoint = localStorage.getItem("hemologic_agent_endpoint")
+    // Call your Flask endpoint
+    const response = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      // optionally send current data if you want later:
+      // body: JSON.stringify(data),
+    });
+
+    if (!response.ok) {
+      throw new Error(`API error: ${response.status}`);
+    }
+
+    const json = await response.json();
+    const text = json.analysis || "No analysis text received.";
+    setFullAnalysisText(text);
+
+    // 2) now start streaming
+    setIsStreaming(true);
+
+  } catch (error) {
+    console.error("Analysis API error:", error);
+    setIsStreaming(false);
+    setStreamedText("Failed to load analysis from server.");
+
+    toast({
+      title: "Analysis failed",
+      description: error.message,
+      variant: "destructive",
+    });
+  }
+};
+
 
   const copyToClipboard = () => {
     navigator.clipboard.writeText(JSON.stringify(data, null, 2));
@@ -154,38 +186,32 @@ The patient is in good general health with a specific need to address elevated f
       </div>
 
       {viewMode === 'table' ? (
-        <div className="space-y-6">
-          <div className="bg-blue-50 rounded-lg p-6">
-            <h3 className="text-lg font-semibold text-blue-900 mb-4">Patient Information</h3>
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div>
-                <p className="text-sm text-blue-600 font-medium">Patient Name</p>
-                <p className="text-blue-900">{data.patientInfo.name}</p>
-              </div>
-              <div>
-                <p className="text-sm text-blue-600 font-medium">Patient ID</p>
-                <p className="text-blue-900">{data.patientInfo.patientId}</p>
-              </div>
-              <div>
-                <p className="text-sm text-blue-600 font-medium">Age</p>
-                <p className="text-blue-900">{data.patientInfo.age} years</p>
-              </div>
-              <div>
-                <p className="text-sm text-blue-600 font-medium">Gender</p>
-                <p className="text-blue-900">{data.patientInfo.gender}</p>
-              </div>
-              <div>
-                <p className="text-sm text-blue-600 font-medium">Test Date</p>
-                <p className="text-blue-900">{data.patientInfo.testDate}</p>
+          <div className="space-y-6">
+            <div className="bg-blue-50 rounded-lg p-6">
+              <h3 className="text-lg font-semibold text-blue-900 mb-4">
+                Patient Information
+              </h3>
+
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {Object.entries(data.patientInfo || {}).map(([key, value]) => (
+                    <div key={key}>
+                      <p className="text-sm text-blue-600 font-medium">
+                        {formatLabel(key)}
+                      </p>
+                      <p className="text-blue-900">
+                        {String(value)}
+                      </p>
+                    </div>
+                ))}
               </div>
             </div>
-          </div>
 
-          <div>
-            <h3 className="text-lg font-semibold text-blue-900 mb-4">Test Results</h3>
-            <div className="overflow-x-auto">
-              <table className="w-full border-collapse">
-                <thead>
+
+            <div>
+              <h3 className="text-lg font-semibold text-blue-900 mb-4">Test Results</h3>
+              <div className="overflow-x-auto">
+                <table className="w-full border-collapse">
+                  <thead>
                   <tr className="bg-blue-600 text-white">
                     <th className="px-4 py-3 text-left font-semibold">Parameter</th>
                     <th className="px-4 py-3 text-left font-semibold">Value</th>
@@ -193,86 +219,89 @@ The patient is in good general health with a specific need to address elevated f
                     <th className="px-4 py-3 text-left font-semibold">Reference Range</th>
                     <th className="px-4 py-3 text-left font-semibold">Status</th>
                   </tr>
-                </thead>
-                <tbody>
+                  </thead>
+                  <tbody>
                   {data.testResults.map((result, index) => (
-                    <motion.tr
-                      key={index}
-                      initial={{ opacity: 0, x: -20 }}
-                      animate={{ opacity: 1, x: 0 }}
-                      transition={{ duration: 0.3, delay: index * 0.05 }}
-                      className={`border-b border-blue-100 hover:bg-blue-50 transition-colors ${
-                        index % 2 === 0 ? 'bg-white' : 'bg-blue-50/30'
-                      }`}
-                    >
-                      <td className="px-4 py-3 font-medium text-blue-900">{result.parameter}</td>
-                      <td className="px-4 py-3 text-blue-800">{result.value}</td>
-                      <td className="px-4 py-3 text-blue-700">{result.unit}</td>
-                      <td className="px-4 py-3 text-blue-700">{result.referenceRange}</td>
-                      <td className="px-4 py-3">
-                        <span className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(result.status)}`}>
+                      <motion.tr
+                          key={index}
+                          initial={{opacity: 0, x: -20}}
+                          animate={{opacity: 1, x: 0}}
+                          transition={{duration: 0.3, delay: index * 0.05}}
+                          className={`border-b border-blue-100 hover:bg-blue-50 transition-colors ${
+                              index % 2 === 0 ? 'bg-white' : 'bg-blue-50/30'
+                          }`}
+                      >
+                        <td className="px-4 py-3 font-medium text-blue-900">{result.parameter}</td>
+                        <td className="px-4 py-3 text-blue-800">{result.value}</td>
+                        <td className="px-4 py-3 text-blue-700">{result.unit}</td>
+                        <td className="px-4 py-3 text-blue-700">{result.referenceRange}</td>
+                        <td className="px-4 py-3">
+                        <span
+                            className={`inline-flex items-center gap-1 px-3 py-1 rounded-full text-sm font-medium ${getStatusColor(result.status)}`}>
                           {getStatusIcon(result.status)}
                           {result.status.charAt(0).toUpperCase() + result.status.slice(1)}
                         </span>
-                      </td>
-                    </motion.tr>
+                        </td>
+                      </motion.tr>
                   ))}
-                </tbody>
-              </table>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            <div className="mt-8 flex flex-col items-center w-full">
+              {!showChat && (
+                  <Button
+                      onClick={startAnalysis}
+                      className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-6 h-auto text-lg shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200"
+                  >
+                    <Sparkles className="w-5 h-5 mr-2 animate-pulse"/>
+                    Vérkép elemzés
+                  </Button>
+              )}
+
+              <AnimatePresence>
+                {showChat && (
+                    <motion.div
+                        initial={{opacity: 0, height: 0}}
+                        animate={{opacity: 1, height: 'auto'}}
+                        exit={{opacity: 0, height: 0}}
+                        className="w-full max-w-3xl mt-4 overflow-hidden"
+                    >
+                      <div className="bg-indigo-50 rounded-xl border border-indigo-100 shadow-inner overflow-hidden">
+                        <div className="bg-indigo-100 px-4 py-3 flex items-center gap-2 border-b border-indigo-200">
+                          <Bot className="w-5 h-5 text-indigo-700"/>
+                          <span className="font-semibold text-indigo-900">AI Medical Assistant</span>
+                          {isStreaming &&
+                              <span className="ml-auto text-xs text-indigo-600 animate-pulse">Thinking...</span>}
+                        </div>
+
+                        <div
+                            ref={chatContainerRef}
+                            className="p-6 h-[300px] overflow-y-auto font-mono text-sm leading-relaxed text-indigo-900 whitespace-pre-wrap"
+                        >
+                          {streamedText}
+                          {isStreaming && <span
+                              className="inline-block w-2 h-4 ml-1 bg-indigo-500 animate-pulse align-middle"></span>}
+                        </div>
+                      </div>
+
+                      <div className="mt-2 text-center">
+                        <p className="text-xs text-gray-500 italic">
+                          Disclaimer: This does not constitute professional medical advice. Content is AI-generated.
+                        </p>
+                      </div>
+                    </motion.div>
+                )}
+              </AnimatePresence>
             </div>
           </div>
-
-          <div className="mt-8 flex flex-col items-center w-full">
-            {!showChat && (
-              <Button 
-                onClick={startAnalysis}
-                className="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-6 h-auto text-lg shadow-lg hover:shadow-xl hover:scale-105 transition-all duration-200"
-              >
-                <Sparkles className="w-5 h-5 mr-2 animate-pulse" />
-                Vérkép elemzés
-              </Button>
-            )}
-
-            <AnimatePresence>
-              {showChat && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: 'auto' }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="w-full max-w-3xl mt-4 overflow-hidden"
-                >
-                  <div className="bg-indigo-50 rounded-xl border border-indigo-100 shadow-inner overflow-hidden">
-                    <div className="bg-indigo-100 px-4 py-3 flex items-center gap-2 border-b border-indigo-200">
-                      <Bot className="w-5 h-5 text-indigo-700" />
-                      <span className="font-semibold text-indigo-900">AI Medical Assistant</span>
-                      {isStreaming && <span className="ml-auto text-xs text-indigo-600 animate-pulse">Thinking...</span>}
-                    </div>
-                    
-                    <div 
-                      ref={chatContainerRef}
-                      className="p-6 h-[300px] overflow-y-auto font-mono text-sm leading-relaxed text-indigo-900 whitespace-pre-wrap"
-                    >
-                      {streamedText}
-                      {isStreaming && <span className="inline-block w-2 h-4 ml-1 bg-indigo-500 animate-pulse align-middle"></span>}
-                    </div>
-                  </div>
-                  
-                  <div className="mt-2 text-center">
-                    <p className="text-xs text-gray-500 italic">
-                      Disclaimer: This does not constitute professional medical advice. Content is AI-generated.
-                    </p>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
       ) : (
-        <div className="bg-blue-900 rounded-lg p-6 overflow-x-auto">
+          <div className="bg-blue-900 rounded-lg p-6 overflow-x-auto">
           <pre className="text-sm text-blue-100 font-mono">
             {JSON.stringify(data, null, 2)}
           </pre>
-        </div>
+          </div>
       )}
     </motion.div>
   );
