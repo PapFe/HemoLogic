@@ -1,0 +1,2 @@
+## Pages
+- [HemoLogic - Blood Test Document Processing](/): Professional blood test document processing platform with OCR capabilities for healthcare providers
