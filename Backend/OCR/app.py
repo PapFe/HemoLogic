@@ -1,7 +1,8 @@
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from OCR_engine import make_mock_data
+from OCR_engine import make_mock_data,create_file
 import requests
+import ocr
 app = Flask(__name__)
 CORS(app)
 CLASSIFIER_URL = "http://127.0.0.1:5002/api/hello"
@@ -12,7 +13,8 @@ def hello():
         return jsonify({"error": "No file uploaded"}), 400
 
     uploaded_file = request.files["file"]
-
+    path = create_file(uploaded_file)
+    filename = uploaded_file.filename
     # ---- 1) FORWARD TO CLASSIFIER SERVICE ----
     files = {
         "file": (uploaded_file.filename, uploaded_file.stream, uploaded_file.mimetype)
@@ -25,9 +27,11 @@ def hello():
     except Exception as e:
         print(jsonify({"error": "Classifier service request failed", "details": str(e)}), 500)
 
-    filename = uploaded_file.filename
 
-    return jsonify(make_mock_data(filename)), 200
+    res = ocr.run_ocr(path)
+
+
+    return jsonify(res), 200
 
 
 if __name__ == "__main__":

@@ -19,7 +19,7 @@ def classify(input_path="",POPPLER_PATH = r"Release-25.11.0-0\poppler-25.11.0\Li
     if ext == ".pdf":
         pages = convert_from_path(
             input_path,
-            dpi=200,  # 150–200 is often enough for OCR, much faster than 300
+            dpi=300,  # 150–200 is often enough for OCR, much faster than 300
             poppler_path=POPPLER_PATH,
             fmt="jpeg",  # or "png", but jpeg is usually faster/smaller
             thread_count=4,  # use multiple cores (try 4 or more)

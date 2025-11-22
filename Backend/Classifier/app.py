@@ -25,7 +25,6 @@ def hello():
         is_synlab, elapsed_time = classify(temp_path)
     finally:
         # Clean up temp file
-        print("elapsed time:", elapsed_time)
         if os.path.exists(temp_path):
             os.remove(temp_path)
 

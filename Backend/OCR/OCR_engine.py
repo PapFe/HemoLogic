@@ -1,3 +1,21 @@
+import easyocr
+import fitz
+import numpy as np
+import cv2
+import pandas as pd
+from pathlib import Path
+import tempfile
+import os
+
+def create_file(uploaded):
+    print(uploaded)
+    suffix = Path(uploaded.filename).suffix
+    with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as tmp:
+        temp_path = tmp.name
+        uploaded.save(temp_path)
+    return temp_path
+
+
 
 def gen_patient_info(filename):
     return {
